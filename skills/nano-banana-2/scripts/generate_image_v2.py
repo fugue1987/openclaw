@@ -184,6 +184,13 @@ def main():
             )
         )
 
+        # Print debug response details if parts is None
+        if not response.parts:
+            print("Response:", response, file=sys.stderr)
+            if hasattr(response, 'candidates') and response.candidates:
+                print("Candidates:", response.candidates, file=sys.stderr)
+            sys.exit(1)
+
         # Process response and convert to PNG
         image_saved = False
         for part in response.parts:
