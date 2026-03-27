@@ -217,3 +217,10 @@
 - For manual `openclaw message send` messages that include `!`, use the heredoc pattern noted below to avoid the Bash tool’s escaping.
 - Release guardrails: do not change version numbers without operator’s explicit consent; always ask permission before running any npm publish/release step.
 - Beta release guardrail: when using a beta Git tag (for example `vYYYY.M.D-beta.N`), publish npm with a matching beta version suffix (for example `YYYY.M.D-beta.N`) rather than a plain version on `--tag beta`; otherwise the plain version name gets consumed/blocked.
+
+## Tool Usage Rules
+
+- **Log/file reading: use `view_file` first, always.** When you need to read log files, config files, or any text file content, use the `view_file` tool directly. Do NOT use terminal commands (`Get-Content`, `cat`, `pm2 logs`, `tail`, etc.) that produce truncated or wrapped output and then retry with a different method. One shot, most precise method, no retries.
+- **Commit implies push.** When asked to commit changes, always push immediately after a successful commit. Do not wait to be asked separately.
+- **Do only what is asked.** Do not add extra steps (e.g., switching branches back) unless explicitly requested. Execute the user's instruction precisely, nothing more.
+
