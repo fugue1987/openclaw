@@ -29,34 +29,52 @@ When a URL returns a paywall or a "subscription required" message:
 ## Workflow
 
 ### 1. Identify the Obstacle
+
 If a direct fetch (e.g., via `web_fetch`) results in limited text, a "subscribe" prompt, or a 403 error, the agent should switch to the Kaichou Perspective.
 
-### 2. Search Archive Mirrors
+### 2. URL Preprocessing
+
+The script automatically handles:
+
+- **Redirect resolution**: Resolves email marketing redirects (e.g., `click.e.economist.com`) to the actual article URL.
+- **URL cleaning**: Strips query parameters (`?utm_*`, etc.) to improve archive search hit rate.
+- **Direct snapshot detection**: If the URL is already an `archive.md/ABC12` snapshot link, skips the search step entirely.
+
+### 3. Search Archive Mirrors
+
 The `archive_bypass.py` script automates the following procedure:
+
 - Attaches to the user's running Chrome instance via CDP (port 9222).
 - Tries multiple archive mirrors in order: `archive.md` → `archive.ph` → `archive.today`.
 - Enters the target URL into the archive's search field (2nd input = snapshot search).
 - Identifies the most recent snapshot link using regex pattern matching.
 
-### 3. Extraction
+### 4. Extraction
+
 The script extracts the main article text by looking for standard semantic tags (`<article>`, `<main>`, `.article-content`, `.story-body`), falling back to `document.body.innerText`.
 
 ## Error Handling
 
 The script returns structured error prefixes for agent decision-making:
 
-| Prefix | Meaning | Suggested Agent Action |
-|--------|---------|----------------------|
-| `ERROR:CDP_CONNECT` | Chrome not reachable | Prompt user to start Chrome with debug port |
+| Prefix              | Meaning                   | Suggested Agent Action                      |
+| ------------------- | ------------------------- | ------------------------------------------- |
+| `ERROR:CDP_CONNECT` | Chrome not reachable      | Prompt user to start Chrome with debug port |
 | `ERROR:NO_SNAPSHOT` | No archived version found | Inform user, suggest alternative approaches |
-| `ERROR:TIMEOUT` | Archive mirror timed out | Retry later or try manually |
-| `ERROR:UNKNOWN` | Unexpected failure | Report error details to user |
+| `ERROR:TIMEOUT`     | Archive mirror timed out  | Retry later or try manually                 |
+| `ERROR:UNKNOWN`     | Unexpected failure        | Report error details to user                |
 
 ## Dependencies
 
 - Python 3.8+
 - `playwright` (see `requirements.txt`)
 - Chrome running with `--remote-debugging-port=9222`
+
+## Resources
+
+### scripts/
+
+- `archive_bypass.py`: A Playwright-based automation script that handles the end-to-end retrieval process through archive mirrors.
 
 ## Security Note
 
@@ -66,6 +84,7 @@ This skill connects to the user's main browser context (`browser.contexts[0]`) t
 
 **User Request**: "I can't read this Bloomberg article, can you help?"
 **Agent Response**: [Triggers kaichou-perspective]
+
 1. Connects to Chrome on port 9222.
 2. Runs `scripts/archive_bypass.py [Bloomberg_URL]`.
 3. Tries archive.md first, falls back to archive.ph if needed.
