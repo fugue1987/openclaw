@@ -16,7 +16,7 @@ const MOONSHOT_MODEL_CATALOG = [
     id: "kimi-k2.5",
     name: "Kimi K2.5",
     reasoning: false,
-    input: ["text", "image"],
+    input: ["text"],
     cost: MOONSHOT_DEFAULT_COST,
     contextWindow: MOONSHOT_DEFAULT_CONTEXT_WINDOW,
     maxTokens: MOONSHOT_DEFAULT_MAX_TOKENS,
