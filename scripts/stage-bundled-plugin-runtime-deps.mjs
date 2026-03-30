@@ -256,7 +256,20 @@ function installPluginRuntimeDeps(params) {
     }
 
     removePathIfExists(nodeModulesDir);
-    fs.renameSync(stagedNodeModulesDir, nodeModulesDir);
+    let retries = 5;
+    while (retries > 0) {
+      try {
+        fs.renameSync(stagedNodeModulesDir, nodeModulesDir);
+        break;
+      } catch (e) {
+        if (e.code === "EPERM" && retries > 1) {
+          spawnSync("ping", ["127.0.0.1", "-n", "2"], { shell: true, stdio: "ignore" });
+          retries--;
+        } else {
+          throw e;
+        }
+      }
+    }
     writeJson(stampPath, {
       fingerprint,
       generatedAt: new Date().toISOString(),
