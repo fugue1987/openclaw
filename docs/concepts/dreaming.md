@@ -1,101 +1,130 @@
 ---
 title: "Dreaming (experimental)"
-summary: "Background promotion from short-term recall into long-term memory"
+summary: "Background memory consolidation with light, deep, and REM phases plus a Dream Diary"
 read_when:
   - You want memory promotion to run automatically
-  - You want to understand dreaming modes and thresholds
+  - You want to understand what each dreaming phase does
   - You want to tune consolidation without polluting MEMORY.md
 ---
 
 # Dreaming (experimental)
 
-Dreaming is the background memory consolidation pass in `memory-core`.
+Dreaming is the background memory consolidation system in `memory-core`.
+It helps OpenClaw move strong short-term signals into durable memory while
+keeping the process explainable and reviewable.
 
-It is called "dreaming" because the system revisits what came up during the day
-and decides what is worth keeping as durable context.
+Dreaming is **opt-in** and disabled by default.
 
-Dreaming is **experimental**, **opt-in**, and **off by default**.
+## What dreaming writes
 
-## What dreaming does
+Dreaming keeps two kinds of output:
 
-1. Tracks short-term recall events from `memory_search` hits in
-   `memory/YYYY-MM-DD.md`.
-2. Scores those recall candidates with weighted signals.
-3. Promotes only qualified candidates into `MEMORY.md`.
+- **Machine state** in `memory/.dreams/` (recall store, phase signals, ingestion checkpoints, locks).
+- **Human-readable output** in `DREAMS.md` (or existing `dreams.md`) and optional phase report files under `memory/dreaming/<phase>/YYYY-MM-DD.md`.
 
-This keeps long-term memory focused on durable, repeated context instead of
-one-off details.
+Long-term promotion still writes only to `MEMORY.md`.
 
-## Promotion signals
+## Phase model
 
-Dreaming combines six signals:
+Dreaming uses three cooperative phases:
 
-- **Frequency**: how often the same candidate was recalled.
-- **Relevance**: how strong recall scores were when it was retrieved.
-- **Query diversity**: how many distinct query intents surfaced it.
-- **Recency**: temporal weighting over recent recalls.
-- **Consolidation**: whether recalls repeated across distinct days instead of one burst.
-- **Conceptual richness**: derived concept tags from the note path and snippet text.
+| Phase | Purpose                                   | Durable write     |
+| ----- | ----------------------------------------- | ----------------- |
+| Light | Sort and stage recent short-term material | No                |
+| Deep  | Score and promote durable candidates      | Yes (`MEMORY.md`) |
+| REM   | Reflect on themes and recurring ideas     | No                |
 
-Promotion requires all configured threshold gates to pass, not just one signal.
+These phases are internal implementation details, not separate user-configured
+"modes."
 
-### Signal weights
+### Light phase
 
-| Signal              | Weight | Description                                        |
-| ------------------- | ------ | -------------------------------------------------- |
-| Frequency           | 0.24   | How often the same entry was recalled              |
-| Relevance           | 0.30   | Average recall scores when retrieved               |
-| Query diversity     | 0.15   | Count of distinct query intents that surfaced it   |
-| Recency             | 0.15   | Temporal decay (`recencyHalfLifeDays`, default 14) |
-| Consolidation       | 0.10   | Reward recalls repeated across multiple days       |
-| Conceptual richness | 0.06   | Reward entries with richer derived concept tags    |
+Light phase ingests recent daily memory signals and recall traces, dedupes them,
+and stages candidate lines.
 
-## How it works
+- Reads from short-term recall state, recent daily memory files, and redacted session transcripts when available.
+- Writes a managed `## Light Sleep` block when storage includes inline output.
+- Records reinforcement signals for later deep ranking.
+- Never writes to `MEMORY.md`.
 
-1. **Recall tracking** -- Every `memory_search` hit is recorded to
-   `memory/.dreams/short-term-recall.json` with recall count, scores, query
-   hash, recall days, and concept tags.
-2. **Scheduled scoring** -- On the configured cadence, candidates are ranked
-   using weighted signals. All threshold gates must pass simultaneously.
-3. **Workspace fan-out** -- Each dreaming cycle runs once per configured memory
-   workspace, so one agent's sessions consolidate into that agent's memory
-   workspace.
-4. **Promotion** -- Before appending anything, dreaming re-reads the current
-   daily note and skips candidates whose source snippet no longer exists.
-   Qualifying live entries are appended to `MEMORY.md` with a promoted
-   timestamp.
-5. **Cleanup** -- Already-promoted entries are filtered from future cycles. A
-   file lock prevents concurrent runs.
+### Deep phase
 
-## Modes
+Deep phase decides what becomes long-term memory.
 
-`dreaming.mode` controls cadence and default thresholds:
+- Ranks candidates using weighted scoring and threshold gates.
+- Requires `minScore`, `minRecallCount`, and `minUniqueQueries` to pass.
+- Rehydrates snippets from live daily files before writing, so stale/deleted snippets are skipped.
+- Appends promoted entries to `MEMORY.md`.
+- Writes a `## Deep Sleep` summary into `DREAMS.md` and optionally writes `memory/dreaming/deep/YYYY-MM-DD.md`.
 
-| Mode   | Cadence        | minScore | minRecallCount | minUniqueQueries | recencyHalfLifeDays |
-| ------ | -------------- | -------- | -------------- | ---------------- | ------------------- |
-| `off`  | Disabled       | --       | --             | --               | --                  |
-| `core` | Daily 3 AM     | 0.75     | 3              | 2                | 14                  |
-| `rem`  | Every 6 hours  | 0.85     | 4              | 3                | 14                  |
-| `deep` | Every 12 hours | 0.80     | 3              | 3                | 14                  |
+### REM phase
 
-## Scheduling model
+REM phase extracts patterns and reflective signals.
 
-When dreaming is enabled, `memory-core` manages the recurring schedule
-automatically. You do not need to manually create a cron job for this feature.
+- Builds theme and reflection summaries from recent short-term traces.
+- Writes a managed `## REM Sleep` block when storage includes inline output.
+- Records REM reinforcement signals used by deep ranking.
+- Never writes to `MEMORY.md`.
 
-You can still tune behavior with explicit overrides such as:
+## Session transcript ingestion
 
-- `dreaming.cron` (cron expression)
-- `dreaming.timezone`
-- `dreaming.limit`
-- `dreaming.minScore`
-- `dreaming.minRecallCount`
-- `dreaming.minUniqueQueries`
-- `dreaming.recencyHalfLifeDays`
-- `dreaming.maxAgeDays`
-- `dreaming.verboseLogging`
+Dreaming can ingest redacted session transcripts into the dreaming corpus. When
+transcripts are available, they are fed into the light phase alongside daily
+memory signals and recall traces. Personal and sensitive content is redacted
+before ingestion.
 
-## Configure
+## Dream Diary
+
+Dreaming also keeps a narrative **Dream Diary** in `DREAMS.md`.
+After each phase has enough material, `memory-core` runs a best-effort background
+subagent turn (using the default runtime model) and appends a short diary entry.
+
+This diary is for human reading in the Dreams UI, not a promotion source.
+
+There is also a grounded historical backfill lane for review and recovery work:
+
+- `memory rem-harness --path ... --grounded` previews grounded diary output from historical `YYYY-MM-DD.md` notes.
+- `memory rem-backfill --path ...` writes reversible grounded diary entries into `DREAMS.md`.
+- `memory rem-backfill --path ... --stage-short-term` stages grounded durable candidates into the same short-term evidence store the normal deep phase already uses.
+- `memory rem-backfill --rollback` and `--rollback-short-term` remove those staged backfill artifacts without touching ordinary diary entries or live short-term recall.
+
+The Control UI exposes the same diary backfill/reset flow so you can inspect
+results in the Dreams scene before deciding whether the grounded candidates
+deserve promotion. The Scene also shows a distinct grounded lane so you can see
+which staged short-term entries came from historical replay, which promoted
+items were grounded-led, and clear only grounded-only staged entries without
+touching ordinary live short-term state.
+
+## Deep ranking signals
+
+Deep ranking uses six weighted base signals plus phase reinforcement:
+
+| Signal              | Weight | Description                                       |
+| ------------------- | ------ | ------------------------------------------------- |
+| Frequency           | 0.24   | How many short-term signals the entry accumulated |
+| Relevance           | 0.30   | Average retrieval quality for the entry           |
+| Query diversity     | 0.15   | Distinct query/day contexts that surfaced it      |
+| Recency             | 0.15   | Time-decayed freshness score                      |
+| Consolidation       | 0.10   | Multi-day recurrence strength                     |
+| Conceptual richness | 0.06   | Concept-tag density from snippet/path             |
+
+Light and REM phase hits add a small recency-decayed boost from
+`memory/.dreams/phase-signals.json`.
+
+## Scheduling
+
+When enabled, `memory-core` auto-manages one cron job for a full dreaming
+sweep. Each sweep runs phases in order: light -> REM -> deep.
+
+Default cadence behavior:
+
+| Setting              | Default     |
+| -------------------- | ----------- |
+| `dreaming.frequency` | `0 3 * * *` |
+
+## Quick start
+
+Enable dreaming:
 
 ```json
 {
@@ -104,9 +133,7 @@ You can still tune behavior with explicit overrides such as:
       "memory-core": {
         "config": {
           "dreaming": {
-            "mode": "core",
-            "recencyHalfLifeDays": 21,
-            "maxAgeDays": 30
+            "enabled": true
           }
         }
       }
@@ -115,57 +142,91 @@ You can still tune behavior with explicit overrides such as:
 }
 ```
 
-## Chat commands
+Enable dreaming with a custom sweep cadence:
 
-Switch modes and check status from chat:
+```json
+{
+  "plugins": {
+    "entries": {
+      "memory-core": {
+        "config": {
+          "dreaming": {
+            "enabled": true,
+            "timezone": "America/Los_Angeles",
+            "frequency": "0 */6 * * *"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Slash command
 
 ```
-/dreaming core          # Switch to core mode (nightly)
-/dreaming rem           # Switch to rem mode (every 6h)
-/dreaming deep          # Switch to deep mode (every 12h)
-/dreaming off           # Disable dreaming
-/dreaming status        # Show current config and cadence
-/dreaming help          # Show mode guide
+/dreaming status
+/dreaming on
+/dreaming off
+/dreaming help
 ```
 
-## CLI commands
+## CLI workflow
 
-Preview and apply promotions from the command line:
+Use CLI promotion for preview or manual apply:
 
 ```bash
-# Preview promotion candidates
 openclaw memory promote
-
-# Apply promotions to MEMORY.md
 openclaw memory promote --apply
-
-# Limit preview count
 openclaw memory promote --limit 5
-
-# Include already-promoted entries
-openclaw memory promote --include-promoted
-
-# Manual runs inherit dreaming thresholds unless you override them
-openclaw memory promote --apply
-
-# Check dreaming status
 openclaw memory status --deep
 ```
 
-See [memory CLI](/cli/memory) for the full flag reference.
+Manual `memory promote` uses deep-phase thresholds by default unless overridden
+with CLI flags.
+
+Explain why a specific candidate would or would not promote:
+
+```bash
+openclaw memory promote-explain "router vlan"
+openclaw memory promote-explain "router vlan" --json
+```
+
+Preview REM reflections, candidate truths, and deep promotion output without
+writing anything:
+
+```bash
+openclaw memory rem-harness
+openclaw memory rem-harness --json
+```
+
+## Key defaults
+
+All settings live under `plugins.entries.memory-core.config.dreaming`.
+
+| Key         | Default     |
+| ----------- | ----------- |
+| `enabled`   | `false`     |
+| `frequency` | `0 3 * * *` |
+
+Phase policy, thresholds, and storage behavior are internal implementation
+details (not user-facing config).
+
+See [Memory configuration reference](/reference/memory-config#dreaming-experimental)
+for the full key list.
 
 ## Dreams UI
 
-When dreaming is enabled, the Gateway sidebar shows a **Dreams** tab with
-memory stats (short-term count, long-term count, promoted count) and the next
-scheduled cycle time. Daily counters honor `dreaming.timezone` when set and
-otherwise fall back to the configured user timezone.
+When enabled, the Gateway **Dreams** tab shows:
 
-Manual `openclaw memory promote` runs use the same dreaming thresholds by
-default, so scheduled and on-demand promotion stay aligned unless you pass CLI
-overrides.
+- current dreaming enabled state
+- phase-level status and managed-sweep presence
+- short-term, grounded, signal, and promoted-today counts
+- next scheduled run timing
+- a distinct grounded Scene lane for staged historical replay entries
+- an expandable Dream Diary reader backed by `doctor.memory.dreamDiary`
 
-## Further reading
+## Related
 
 - [Memory](/concepts/memory)
 - [Memory Search](/concepts/memory-search)

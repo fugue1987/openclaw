@@ -5,63 +5,66 @@ const resolveDefaultAgentId = vi.hoisted(() => vi.fn(() => "main"));
 const resolveAgentWorkspaceDir = vi.hoisted(() =>
   vi.fn((_cfg: OpenClawConfig, agentId: string) => `/workspace/${agentId}`),
 );
-const resolveMemorySearchConfig = vi.hoisted(() =>
-  vi.fn((_cfg: OpenClawConfig, _agentId: string) => ({ enabled: true })),
-);
 
 vi.mock("../agents/agent-scope.js", () => ({
   resolveDefaultAgentId,
   resolveAgentWorkspaceDir,
 }));
 
-vi.mock("../agents/memory-search.js", () => ({
-  resolveMemorySearchConfig,
-}));
-
 import {
   formatMemoryDreamingDay,
   isSameMemoryDreamingDay,
-  resolveMemoryCorePluginConfig,
+  resolveMemoryDreamingPluginConfig,
+  resolveMemoryDreamingPluginId,
   resolveMemoryDreamingConfig,
   resolveMemoryDreamingWorkspaces,
 } from "./dreaming.js";
 
 describe("memory dreaming host helpers", () => {
-  it("prefers cron over legacy frequency and normalizes string settings", () => {
+  it("normalizes string settings from the dreaming config", () => {
     const resolved = resolveMemoryDreamingConfig({
       pluginConfig: {
         dreaming: {
-          mode: "deep",
-          cron: "0 */4 * * *",
-          frequency: "0 */12 * * *",
+          enabled: true,
+          frequency: "0 */4 * * *",
           timezone: "Europe/London",
-          limit: "5",
-          minScore: "0.9",
-          minRecallCount: "4",
-          minUniqueQueries: "2",
-          recencyHalfLifeDays: "21",
-          maxAgeDays: "30",
-          verboseLogging: "true",
+          storage: {
+            mode: "both",
+            separateReports: true,
+          },
+          phases: {
+            deep: {
+              limit: "5",
+              minScore: "0.9",
+              minRecallCount: "4",
+              minUniqueQueries: "2",
+              recencyHalfLifeDays: "21",
+              maxAgeDays: "30",
+            },
+          },
         },
       },
     });
 
-    expect(resolved).toEqual({
-      mode: "deep",
-      enabled: true,
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.frequency).toBe("0 */4 * * *");
+    expect(resolved.timezone).toBe("Europe/London");
+    expect(resolved.storage).toEqual({
+      mode: "both",
+      separateReports: true,
+    });
+    expect(resolved.phases.deep).toMatchObject({
       cron: "0 */4 * * *",
-      timezone: "Europe/London",
       limit: 5,
       minScore: 0.9,
       minRecallCount: 4,
       minUniqueQueries: 2,
       recencyHalfLifeDays: 21,
       maxAgeDays: 30,
-      verboseLogging: true,
     });
   });
 
-  it("falls back to cfg timezone and core defaults when mode is off", () => {
+  it("falls back to cfg timezone and deep defaults", () => {
     const cfg = {
       agents: {
         defaults: {
@@ -71,27 +74,39 @@ describe("memory dreaming host helpers", () => {
     } as OpenClawConfig;
 
     const resolved = resolveMemoryDreamingConfig({
-      pluginConfig: {
-        dreaming: {
-          mode: "off",
-        },
-      },
+      pluginConfig: {},
       cfg,
     });
 
     expect(resolved.enabled).toBe(false);
-    expect(resolved.cron).toBe("0 3 * * *");
+    expect(resolved.frequency).toBe("0 3 * * *");
     expect(resolved.timezone).toBe("America/Los_Angeles");
-    expect(resolved.limit).toBe(10);
-    expect(resolved.minScore).toBe(0.75);
-    expect(resolved.recencyHalfLifeDays).toBe(14);
-    expect(resolved.maxAgeDays).toBeUndefined();
+    expect(resolved.phases.deep).toMatchObject({
+      cron: "0 3 * * *",
+      limit: 10,
+      minScore: 0.8,
+      recencyHalfLifeDays: 14,
+      maxAgeDays: 30,
+    });
   });
 
-  it("dedupes shared workspaces and skips agents without memory search", () => {
-    resolveMemorySearchConfig.mockImplementation((_cfg: OpenClawConfig, agentId: string) =>
-      agentId === "beta" ? null : { enabled: true },
-    );
+  it("applies top-level dreaming frequency across all phases", () => {
+    const resolved = resolveMemoryDreamingConfig({
+      pluginConfig: {
+        dreaming: {
+          enabled: true,
+          frequency: "15 */8 * * *",
+        },
+      },
+    });
+
+    expect(resolved.frequency).toBe("15 */8 * * *");
+    expect(resolved.phases.light.cron).toBe("15 */8 * * *");
+    expect(resolved.phases.deep.cron).toBe("15 */8 * * *");
+    expect(resolved.phases.rem.cron).toBe("15 */8 * * *");
+  });
+
+  it("dedupes shared workspaces across all configured agents", () => {
     resolveAgentWorkspaceDir.mockImplementation((_cfg: OpenClawConfig, agentId: string) => {
       if (agentId === "alpha") {
         return "/workspace/shared";
@@ -112,6 +127,10 @@ describe("memory dreaming host helpers", () => {
       {
         workspaceDir: "/workspace/shared",
         agentIds: ["alpha", "gamma"],
+      },
+      {
+        workspaceDir: "/workspace/beta",
+        agentIds: ["beta"],
       },
     ]);
   });
@@ -138,13 +157,25 @@ describe("memory dreaming host helpers", () => {
       ),
     ).toBe(true);
     expect(
-      resolveMemoryCorePluginConfig({
+      resolveMemoryDreamingPluginId({
         plugins: {
+          slots: {
+            memory: "memos-local-openclaw-plugin",
+          },
+        },
+      } as OpenClawConfig),
+    ).toBe("memos-local-openclaw-plugin");
+    expect(
+      resolveMemoryDreamingPluginConfig({
+        plugins: {
+          slots: {
+            memory: "memos-local-openclaw-plugin",
+          },
           entries: {
-            "memory-core": {
+            "memos-local-openclaw-plugin": {
               config: {
                 dreaming: {
-                  mode: "core",
+                  enabled: true,
                 },
               },
             },
@@ -153,7 +184,61 @@ describe("memory dreaming host helpers", () => {
       } as OpenClawConfig),
     ).toEqual({
       dreaming: {
-        mode: "core",
+        enabled: true,
+      },
+    });
+    expect(
+      resolveMemoryDreamingPluginConfig({
+        plugins: {
+          entries: {
+            "memory-core": {
+              config: {
+                dreaming: {
+                  enabled: true,
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig),
+    ).toEqual({
+      dreaming: {
+        enabled: true,
+      },
+    });
+  });
+
+  it('falls back to memory-core when memory slot is "none" or blank', () => {
+    expect(
+      resolveMemoryDreamingPluginId({
+        plugins: {
+          slots: {
+            memory: "none",
+          },
+        },
+      } as OpenClawConfig),
+    ).toBe("memory-core");
+
+    expect(
+      resolveMemoryDreamingPluginConfig({
+        plugins: {
+          slots: {
+            memory: "   ",
+          },
+          entries: {
+            "memory-core": {
+              config: {
+                dreaming: {
+                  enabled: true,
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig),
+    ).toEqual({
+      dreaming: {
+        enabled: true,
       },
     });
   });

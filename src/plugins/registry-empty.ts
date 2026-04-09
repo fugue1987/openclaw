@@ -1,4 +1,4 @@
-import type { PluginRegistry } from "./registry.js";
+import type { PluginRegistry } from "./registry-types.js";
 
 export function createEmptyPluginRegistry(): PluginRegistry {
   return {
@@ -16,6 +16,7 @@ export function createEmptyPluginRegistry(): PluginRegistry {
     mediaUnderstandingProviders: [],
     imageGenerationProviders: [],
     videoGenerationProviders: [],
+    musicGenerationProviders: [],
     webFetchProviders: [],
     webSearchProviders: [],
     memoryEmbeddingProviders: [],
@@ -23,6 +24,9 @@ export function createEmptyPluginRegistry(): PluginRegistry {
     gatewayMethodScopes: {},
     httpRoutes: [],
     cliRegistrars: [],
+    reloads: [],
+    nodeHostCommands: [],
+    securityAuditCollectors: [],
     services: [],
     commands: [],
     conversationBindingResolvedHandlers: [],

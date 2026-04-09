@@ -7,6 +7,7 @@ import type {
   PluginHookReplyDispatchEvent,
   PluginHookReplyDispatchResult,
 } from "../plugins/types.js";
+import { normalizeOptionalString } from "../shared/string-coerce.js";
 
 export { getAcpSessionManager };
 export { AcpRuntimeError, isAcpRuntimeError } from "../acp/runtime/errors.js";
@@ -41,10 +42,27 @@ function loadDispatchAcpRuntime() {
   return dispatchAcpRuntimePromise;
 }
 
+function hasExplicitCommandCandidate(ctx: PluginHookReplyDispatchEvent["ctx"]): boolean {
+  const commandBody = normalizeOptionalString(ctx.CommandBody);
+  if (commandBody) {
+    return true;
+  }
+
+  const normalized = normalizeOptionalString(ctx.BodyForCommands);
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized.startsWith("!") || normalized.startsWith("/");
+}
+
 export async function tryDispatchAcpReplyHook(
   event: PluginHookReplyDispatchEvent,
   ctx: PluginHookReplyDispatchContext,
 ): Promise<PluginHookReplyDispatchResult | void> {
+  if (event.sendPolicy === "deny" && !hasExplicitCommandCandidate(event.ctx)) {
+    return;
+  }
   const runtime = await loadDispatchAcpRuntime();
   const bypassForCommand = await runtime.shouldBypassAcpDispatchForCommand(event.ctx, ctx.cfg);
 

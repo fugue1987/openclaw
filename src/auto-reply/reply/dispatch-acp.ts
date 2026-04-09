@@ -1,4 +1,3 @@
-import type { AcpTurnAttachment } from "../../acp/control-plane/manager.types.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../../acp/policy.js";
 import { formatAcpRuntimeErrorText } from "../../acp/runtime/error-text.js";
 import { toAcpRuntimeError } from "../../acp/runtime/errors.js";
@@ -11,22 +10,26 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
 import { prefixSystemMessage } from "../../infra/system-message.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+} from "../../shared/string-coerce.js";
 import { resolveStatusTtsSnapshot } from "../../tts/status-config.js";
 import { resolveConfiguredTtsMode } from "../../tts/tts-config.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { createAcpReplyProjector } from "./acp-projector.js";
+import { loadDispatchAcpMediaRuntime, resolveAcpAttachments } from "./dispatch-acp-attachments.js";
 import {
   createAcpDispatchDeliveryCoordinator,
   type AcpDispatchDeliveryCoordinator,
 } from "./dispatch-acp-delivery.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 
-let dispatchAcpMediaRuntimePromise: Promise<
-  typeof import("./dispatch-acp-media.runtime.js")
-> | null = null;
 let dispatchAcpManagerRuntimePromise: Promise<
   typeof import("./dispatch-acp-manager.runtime.js")
 > | null = null;
@@ -35,11 +38,6 @@ let dispatchAcpSessionRuntimePromise: Promise<
 > | null = null;
 let dispatchAcpTtsRuntimePromise: Promise<typeof import("./dispatch-acp-tts.runtime.js")> | null =
   null;
-
-function loadDispatchAcpMediaRuntime() {
-  dispatchAcpMediaRuntimePromise ??= import("./dispatch-acp-media.runtime.js");
-  return dispatchAcpMediaRuntimePromise;
-}
 
 function loadDispatchAcpManagerRuntime() {
   dispatchAcpManagerRuntimePromise ??= import("./dispatch-acp-manager.runtime.js");
@@ -91,71 +89,21 @@ function hasInboundMediaForAcp(ctx: FinalizedMsgContext): boolean {
   return Boolean(
     ctx.StickerMediaIncluded ||
     ctx.Sticker ||
-    ctx.MediaPath?.trim() ||
-    ctx.MediaUrl?.trim() ||
-    ctx.MediaPaths?.some((value) => value?.trim()) ||
-    ctx.MediaUrls?.some((value) => value?.trim()) ||
+    normalizeOptionalString(ctx.MediaPath) ||
+    normalizeOptionalString(ctx.MediaUrl) ||
+    ctx.MediaPaths?.some((value) => normalizeOptionalString(value)) ||
+    ctx.MediaUrls?.some((value) => normalizeOptionalString(value)) ||
     ctx.MediaTypes?.length,
   );
 }
 
-const ACP_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-const ACP_ATTACHMENT_TIMEOUT_MS = 1_000;
-
-async function resolveAcpAttachments(
-  ctx: FinalizedMsgContext,
-  cfg: OpenClawConfig,
-): Promise<AcpTurnAttachment[]> {
-  const {
-    MediaAttachmentCache,
-    isMediaUnderstandingSkipError,
-    normalizeAttachments,
-    resolveMediaAttachmentLocalRoots,
-  } = await loadDispatchAcpMediaRuntime();
-  const mediaAttachments = normalizeAttachments(ctx).map((attachment) =>
-    attachment.path?.trim() ? { ...attachment, url: undefined } : attachment,
-  );
-  const cache = new MediaAttachmentCache(mediaAttachments, {
-    localPathRoots: resolveMediaAttachmentLocalRoots({ cfg, ctx }),
-  });
-  const results: AcpTurnAttachment[] = [];
-  for (const attachment of mediaAttachments) {
-    const mediaType = attachment.mime ?? "application/octet-stream";
-    if (!mediaType.startsWith("image/")) {
-      continue;
-    }
-    if (!attachment.path?.trim()) {
-      continue;
-    }
-    try {
-      const { buffer } = await cache.getBuffer({
-        attachmentIndex: attachment.index,
-        maxBytes: ACP_ATTACHMENT_MAX_BYTES,
-        timeoutMs: ACP_ATTACHMENT_TIMEOUT_MS,
-      });
-      results.push({
-        mediaType,
-        data: buffer.toString("base64"),
-      });
-    } catch (error) {
-      if (isMediaUnderstandingSkipError(error)) {
-        logVerbose(`dispatch-acp: skipping attachment #${attachment.index + 1} (${error.reason})`);
-      } else {
-        const errorName = error instanceof Error ? error.name : typeof error;
-        logVerbose(
-          `dispatch-acp: failed to read attachment #${attachment.index + 1} (${errorName})`,
-        );
-      }
-      // Skip unreadable files. Text content should still be delivered.
-    }
-  }
-  return results;
-}
-
 function resolveAcpRequestId(ctx: FinalizedMsgContext): string {
   const id = ctx.MessageSidFull ?? ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
-  if (typeof id === "string" && id.trim()) {
-    return id.trim();
+  if (typeof id === "string") {
+    const normalizedId = normalizeOptionalString(id);
+    if (normalizedId) {
+      return normalizedId;
+    }
   }
   if (typeof id === "number" || typeof id === "bigint") {
     return String(id);
@@ -169,61 +117,28 @@ async function hasBoundConversationForSession(params: {
   channelRaw: string | undefined;
   accountIdRaw: string | undefined;
 }): Promise<boolean> {
-  const channel = String(params.channelRaw ?? "")
-    .trim()
-    .toLowerCase();
+  const channel = normalizeOptionalLowercaseString(params.channelRaw) ?? "";
   if (!channel) {
     return false;
   }
-  const accountId = String(params.accountIdRaw ?? "")
-    .trim()
-    .toLowerCase();
+  const accountId = normalizeOptionalLowercaseString(params.accountIdRaw) ?? "";
   const channels = params.cfg.channels as Record<string, { defaultAccount?: unknown } | undefined>;
   const configuredDefaultAccountId = channels?.[channel]?.defaultAccount;
   const normalizedAccountId =
-    accountId ||
-    (typeof configuredDefaultAccountId === "string" && configuredDefaultAccountId.trim()
-      ? configuredDefaultAccountId.trim().toLowerCase()
-      : "default");
+    accountId || normalizeOptionalLowercaseString(configuredDefaultAccountId) || "default";
   const { getSessionBindingService } = await loadDispatchAcpManagerRuntime();
   const bindingService = getSessionBindingService();
   const bindings = bindingService.listBySession(params.sessionKey);
   return bindings.some((binding) => {
-    const bindingChannel = String(binding.conversation.channel ?? "")
-      .trim()
-      .toLowerCase();
-    const bindingAccountId = String(binding.conversation.accountId ?? "")
-      .trim()
-      .toLowerCase();
-    const conversationId = String(binding.conversation.conversationId ?? "").trim();
+    const bindingChannel = normalizeOptionalLowercaseString(binding.conversation.channel) ?? "";
+    const bindingAccountId = normalizeOptionalLowercaseString(binding.conversation.accountId) ?? "";
+    const conversationId = normalizeOptionalString(binding.conversation.conversationId) ?? "";
     return (
       bindingChannel === channel &&
       (bindingAccountId || "default") === normalizedAccountId &&
       conversationId.length > 0
     );
   });
-}
-
-function resolveDispatchAccountId(params: {
-  cfg: OpenClawConfig;
-  channelRaw: string | undefined;
-  accountIdRaw: string | undefined;
-}): string | undefined {
-  const channel = String(params.channelRaw ?? "")
-    .trim()
-    .toLowerCase();
-  if (!channel) {
-    return params.accountIdRaw?.trim() || undefined;
-  }
-  const explicit = params.accountIdRaw?.trim();
-  if (explicit) {
-    return explicit;
-  }
-  const channels = params.cfg.channels as Record<string, { defaultAccount?: unknown } | undefined>;
-  const configuredDefaultAccountId = channels?.[channel]?.defaultAccount;
-  return typeof configuredDefaultAccountId === "string" && configuredDefaultAccountId.trim()
-    ? configuredDefaultAccountId.trim()
-    : undefined;
 }
 
 export type AcpDispatchAttemptResult = {
@@ -262,7 +177,7 @@ async function maybeUnbindStaleBoundConversations(params: {
     }
   } catch (error) {
     logVerbose(
-      `dispatch-acp: failed to unbind stale bound conversations for ${params.targetSessionKey}: ${error instanceof Error ? error.message : String(error)}`,
+      `dispatch-acp: failed to unbind stale bound conversations for ${params.targetSessionKey}: ${formatErrorMessage(error)}`,
     );
   }
 }
@@ -310,9 +225,7 @@ async function finalizeAcpTurnOutput(params: {
         finalMediaDelivered = delivered;
       }
     } catch (err) {
-      logVerbose(
-        `dispatch-acp: accumulated ACP block TTS failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logVerbose(`dispatch-acp: accumulated ACP block TTS failed: ${formatErrorMessage(err)}`);
     }
   }
 
@@ -377,7 +290,7 @@ export async function tryDispatchAcpReply(params: {
   recordProcessed: DispatchProcessedRecorder;
   markIdle: (reason: string) => void;
 }): Promise<AcpDispatchAttemptResult | null> {
-  const sessionKey = params.sessionKey?.trim();
+  const sessionKey = normalizeOptionalString(params.sessionKey);
   if (!sessionKey || params.bypassForCommand) {
     return null;
   }
@@ -414,7 +327,10 @@ export async function tryDispatchAcpReply(params: {
   const shouldEmitResolvedIdentityNotice =
     !params.suppressUserDelivery &&
     identityPendingBeforeTurn &&
-    (Boolean(params.ctx.MessageThreadId != null && String(params.ctx.MessageThreadId).trim()) ||
+    (Boolean(
+      params.ctx.MessageThreadId != null &&
+      (normalizeOptionalString(String(params.ctx.MessageThreadId)) ?? ""),
+    ) ||
       (await hasBoundConversationForSession({
         cfg: params.cfg,
         sessionKey: canonicalSessionKey,
@@ -424,17 +340,23 @@ export async function tryDispatchAcpReply(params: {
 
   const resolvedAcpAgent =
     acpResolution.kind === "ready"
-      ? (
-          acpResolution.meta.agent?.trim() ||
-          params.cfg.acp?.defaultAgent?.trim() ||
-          resolveAgentIdFromSessionKey(canonicalSessionKey)
-        ).trim()
+      ? (normalizeOptionalString(acpResolution.meta.agent) ??
+        normalizeOptionalString(params.cfg.acp?.defaultAgent) ??
+        resolveAgentIdFromSessionKey(canonicalSessionKey))
       : resolveAgentIdFromSessionKey(canonicalSessionKey);
-  const effectiveDispatchAccountId = resolveDispatchAccountId({
-    cfg: params.cfg,
-    channelRaw: params.ctx.OriginatingChannel ?? params.ctx.Surface ?? params.ctx.Provider,
-    accountIdRaw: params.ctx.AccountId,
-  });
+  const normalizedDispatchChannel = normalizeOptionalLowercaseString(
+    params.ctx.OriginatingChannel ?? params.ctx.Surface ?? params.ctx.Provider,
+  );
+  const explicitDispatchAccountId = normalizeOptionalString(params.ctx.AccountId);
+  const dispatchChannels = params.cfg.channels as
+    | Record<string, { defaultAccount?: unknown } | undefined>
+    | undefined;
+  const defaultDispatchAccount =
+    normalizedDispatchChannel == null
+      ? undefined
+      : dispatchChannels?.[normalizedDispatchChannel]?.defaultAccount;
+  const effectiveDispatchAccountId =
+    explicitDispatchAccountId ?? normalizeOptionalString(defaultDispatchAccount);
   const projector = createAcpReplyProjector({
     cfg: params.cfg,
     shouldSendToolSummaries: params.shouldSendToolSummaries,
@@ -465,7 +387,7 @@ export async function tryDispatchAcpReply(params: {
         `acp-dispatch: session=${sessionKey} outcome=error code=${acpResolution.error.code} latencyMs=${Date.now() - acpDispatchStartedAt} queueDepth=${acpStats.turns.queueDepth} activeRuntimes=${acpStats.runtimeCache.activeSessions}`,
       );
       params.recordProcessed("completed", {
-        reason: `acp_error:${acpResolution.error.code.toLowerCase()}`,
+        reason: `acp_error:${normalizeLowercaseStringOrEmpty(acpResolution.error.code)}`,
       });
       params.markIdle("message_completed");
       return { queuedFinal: delivered, counts };
@@ -483,13 +405,15 @@ export async function tryDispatchAcpReply(params: {
         });
       } catch (err) {
         logVerbose(
-          `dispatch-acp: media understanding failed, proceeding with raw content: ${err instanceof Error ? err.message : String(err)}`,
+          `dispatch-acp: media understanding failed, proceeding with raw content: ${formatErrorMessage(err)}`,
         );
       }
     }
 
     const promptText = resolveAcpPromptText(params.ctx);
-    const attachments = await resolveAcpAttachments(params.ctx, params.cfg);
+    const attachments = hasInboundMediaForAcp(params.ctx)
+      ? await resolveAcpAttachments({ ctx: params.ctx, cfg: params.cfg })
+      : [];
     if (!promptText && attachments.length === 0) {
       const counts = params.dispatcher.getQueuedCounts();
       delivery.applyRoutedCounts(counts);
@@ -501,9 +425,7 @@ export async function tryDispatchAcpReply(params: {
     try {
       await delivery.startReplyLifecycle();
     } catch (error) {
-      logVerbose(
-        `dispatch-acp: start reply lifecycle failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      logVerbose(`dispatch-acp: start reply lifecycle failed: ${formatErrorMessage(error)}`);
     }
 
     await acpManager.runTurn({
@@ -532,9 +454,10 @@ export async function tryDispatchAcpReply(params: {
     const counts = params.dispatcher.getQueuedCounts();
     delivery.applyRoutedCounts(counts);
     const acpStats = acpManager.getObservabilitySnapshot(params.cfg);
-    if (params.runId?.trim()) {
+    const runId = normalizeOptionalString(params.runId);
+    if (runId) {
       emitAgentEvent({
-        runId: params.runId.trim(),
+        runId,
         sessionKey,
         stream: "lifecycle",
         data: {
@@ -569,9 +492,10 @@ export async function tryDispatchAcpReply(params: {
     const counts = params.dispatcher.getQueuedCounts();
     delivery.applyRoutedCounts(counts);
     const acpStats = acpManager.getObservabilitySnapshot(params.cfg);
-    if (params.runId?.trim()) {
+    const runId = normalizeOptionalString(params.runId);
+    if (runId) {
       emitAgentEvent({
-        runId: params.runId.trim(),
+        runId,
         sessionKey,
         stream: "lifecycle",
         data: {
@@ -586,7 +510,7 @@ export async function tryDispatchAcpReply(params: {
       `acp-dispatch: session=${sessionKey} outcome=error code=${acpError.code} latencyMs=${Date.now() - acpDispatchStartedAt} queueDepth=${acpStats.turns.queueDepth} activeRuntimes=${acpStats.runtimeCache.activeSessions}`,
     );
     params.recordProcessed("completed", {
-      reason: `acp_error:${acpError.code.toLowerCase()}`,
+      reason: `acp_error:${normalizeLowercaseStringOrEmpty(acpError.code)}`,
     });
     params.markIdle("message_completed");
     return { queuedFinal, counts };
